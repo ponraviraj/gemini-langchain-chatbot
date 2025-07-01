@@ -6,25 +6,35 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import ConversationChain
 from langchain.memory import ConversationBufferMemory
 
-# Setup
+# Load environment
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY")
 LANGCHAIN_PROJECT = os.getenv("LANGCHAIN_PROJECT")
 
-# Set LangSmith tracing envs (optional)
+# LangSmith (optional)
 os.environ["LANGCHAIN_API_KEY"] = LANGCHAIN_API_KEY or ""
 os.environ["LANGCHAIN_PROJECT"] = LANGCHAIN_PROJECT or ""
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
 
-# Streamlit page setup
+# App config
 st.set_page_config(page_title="Gemini Chat", page_icon="🤖")
 
 # Create data folder
 if not os.path.exists("data"):
     os.makedirs("data")
 
-# Session state initialization
+# Load or init user credentials
+users_file = "data/users.json"
+if os.path.exists(users_file):
+    with open(users_file, "r") as f:
+        users = json.load(f)
+else:
+    users = {}
+
+# Session state init
+if "page" not in st.session_state:
+    st.session_state.page = "auth"
 if "username" not in st.session_state:
     st.session_state.username = None
 if "chat_history" not in st.session_state:
@@ -32,65 +42,83 @@ if "chat_history" not in st.session_state:
 if "conversation" not in st.session_state:
     st.session_state.conversation = None
 
-# Login block
-if st.session_state.username is None:
-    st.title("🔐 Enter Unique Name to Start")
-    username = st.text_input("Your Name (must be unique):")
+# ---------- AUTH PAGE ----------
+if st.session_state.page == "auth":
+    st.title("🔐 Welcome to Gemini Chat")
 
-    if st.button("Login"):
-        if not username.strip():
-            st.warning("❗ Please enter a valid name.")
-        elif os.path.exists(f"data/{username}.json"):
-            st.error("⚠️ Name already taken! Try another.")
-        else:
-            # New user setup
-            st.session_state.username = username
-            st.session_state.user_file = f"data/{username}.json"
-            st.session_state.chat_history = []
-            st.success(f"✅ Welcome {username}!")
-            # No rerun needed — let it proceed
-else:
-    # Load history only once
-    if os.path.exists(f"data/{st.session_state.username}.json") and not st.session_state.chat_history:
-        with open(f"data/{st.session_state.username}.json", "r") as f:
+    tab1, tab2 = st.tabs(["🔓 Login", "🆕 Signup"])
+
+    with tab1:
+        login_name = st.text_input("Name", key="login_name")
+        login_pass = st.text_input("Password", type="password", key="login_pass")
+        if st.button("Login"):
+            if login_name in users and users[login_name] == login_pass:
+                st.session_state.username = login_name
+                st.session_state.page = "chat"
+                st.success("✅ Logged in successfully!")
+                st.experimental_rerun()
+            else:
+                st.error("❌ Invalid name or password")
+
+    with tab2:
+        signup_name = st.text_input("Create Name", key="signup_name")
+        signup_pass = st.text_input("Create Password", type="password", key="signup_pass")
+        if st.button("Signup"):
+            if signup_name in users:
+                st.warning("⚠️ Name already exists, choose another.")
+            elif not signup_name or not signup_pass:
+                st.warning("❗ Both fields are required.")
+            else:
+                users[signup_name] = signup_pass
+                with open(users_file, "w") as f:
+                    json.dump(users, f, indent=2)
+                with open(f"data/{signup_name}.json", "w") as f:
+                    json.dump([], f)
+                st.success("✅ Signup successful! You can login now.")
+
+# ---------- CHAT PAGE ----------
+elif st.session_state.page == "chat":
+    username = st.session_state.username
+    user_file = f"data/{username}.json"
+
+    # Load chat history once
+    if os.path.exists(user_file) and not st.session_state.chat_history:
+        with open(user_file, "r") as f:
             st.session_state.chat_history = json.load(f)
 
-    # Setup chatbot only once
+    # Load model
     if st.session_state.conversation is None:
+        llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=GOOGLE_API_KEY)
         memory = ConversationBufferMemory()
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",
-            google_api_key=GOOGLE_API_KEY
-        )
         st.session_state.conversation = ConversationChain(llm=llm, memory=memory)
 
-    # UI display
-    st.title(f"💬 Chat with Gemini - {st.session_state.username}")
+    # UI
+    st.title(f"💬 Chat with Gemini - {username}")
+    logout_btn = st.button("🚪 Logout")
+    if logout_btn:
+        st.session_state.page = "auth"
+        st.session_state.username = None
+        st.session_state.chat_history = []
+        st.session_state.conversation = None
+        st.experimental_rerun()
 
-    # Show previous conversation
+    # Display previous chats
     for chat in st.session_state.chat_history:
         st.markdown(f"🧑‍💻 **You:** {chat['user']}")
         st.markdown(f"🤖 **Gemini:** {chat['bot']}")
 
-    # User input
+    # Input and response
     user_input = st.text_input("Ask Gemini something:")
 
     if user_input:
-        # Handle "name" questions smartly
-        if any(x in user_input.lower() for x in ["what is my name", "who am i", "tell my name"]):
-            response = f"Your name is {st.session_state.username}."
+        if any(x in user_input.lower() for x in ["what is my name", "who am i"]):
+            response = f"Your name is {username}."
         else:
             response = st.session_state.conversation.predict(input=user_input)
 
-        # Save and display
-        st.session_state.chat_history.append({
-            "user": user_input,
-            "bot": response
-        })
-
-        with open(f"data/{st.session_state.username}.json", "w") as f:
+        st.session_state.chat_history.append({"user": user_input, "bot": response})
+        with open(user_file, "w") as f:
             json.dump(st.session_state.chat_history, f, indent=2)
 
-        # Show latest reply
         st.markdown(f"🧑‍💻 **You:** {user_input}")
         st.markdown(f"🤖 **Gemini:** {response}")
