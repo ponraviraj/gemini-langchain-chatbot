@@ -5,26 +5,16 @@ from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import ConversationChain
 from langchain.memory import ConversationBufferMemory
-from langsmith import traceable
 
-# Load environment variables
+# Load environment
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY")
-LANGCHAIN_PROJECT = os.getenv("LANGCHAIN_PROJECT")
-LANGCHAIN_ENDPOINT = os.getenv("LANGCHAIN_ENDPOINT", "https://api.smith.langchain.com")
 
-# LangSmith setup
-os.environ["LANGCHAIN_API_KEY"] = LANGCHAIN_API_KEY
-os.environ["LANGCHAIN_PROJECT"] = LANGCHAIN_PROJECT
-os.environ["LANGCHAIN_ENDPOINT"] = LANGCHAIN_ENDPOINT
-os.environ["LANGCHAIN_TRACING_V2"] = "true"
+# Database Setup
+if not os.path.exists("database"):
+    os.makedirs("database")
 
-# DB setup
-if not os.path.exists("data"):
-    os.makedirs("data")
-
-conn = sqlite3.connect("data/gemini_users.db", check_same_thread=False)
+conn = sqlite3.connect("database/chat_data.db", check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute('''
@@ -42,24 +32,24 @@ cursor.execute('''
 ''')
 conn.commit()
 
-# App config
-st.set_page_config(page_title="Gemini Chat", page_icon="🤖")
+# Page config
+st.set_page_config(page_title="Gemini Chat", page_icon="💬")
 
-# Session state
+# Session state init
 if "page" not in st.session_state:
     st.session_state.page = "auth"
 if "username" not in st.session_state:
     st.session_state.username = ""
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
 if "conversation" not in st.session_state:
     st.session_state.conversation = None
-if "show_history" not in st.session_state:
-    st.session_state.show_history = True
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 if "page_number" not in st.session_state:
     st.session_state.page_number = 0
+if "show_history" not in st.session_state:
+    st.session_state.show_history = True
 
-# Auth functions
+# Helper functions
 def login_user(name, password):
     cursor.execute("SELECT * FROM users WHERE username = ? AND password = ?", (name, password))
     return cursor.fetchone() is not None
@@ -72,112 +62,82 @@ def signup_user(name, password):
     except sqlite3.IntegrityError:
         return False
 
-# LangSmith traceable wrapper
-@traceable(name="Gemini Chat Session")
-def chat_with_gemini(user_input):
-    return st.session_state.conversation.predict(input=user_input)
-
-# Chat UI
+# AUTH PAGE
 if st.session_state.page == "auth":
-    st.title("🌈 Welcome to Gemini Neon Chat")
-    tab1, tab2 = st.tabs(["🔓 Login", "🆕 Signup"])
+    st.title("Gemini Chat")
+    tab1, tab2 = st.tabs(["Login", "Signup"])
+
     with tab1:
-        name = st.text_input("Name", key="login_name")
-        pw = st.text_input("Password", type="password", key="login_pass")
+        name = st.text_input("Username")
+        pw = st.text_input("Password", type="password")
         if st.button("Login"):
             if login_user(name, pw):
                 st.session_state.username = name
                 st.session_state.page = "chat"
                 st.rerun()
             else:
-                st.error("Invalid credentials")
+                st.error("Invalid username or password")
+
     with tab2:
-        sname = st.text_input("Create Name", key="signup_name")
-        spw = st.text_input("Create Password", type="password", key="signup_pass")
+        sname = st.text_input("Create Username")
+        spw = st.text_input("Create Password", type="password")
         if st.button("Signup"):
             if signup_user(sname, spw):
-                st.success("Signup successful! Please login.")
+                st.success("Signup successful. Please log in.")
             else:
                 st.warning("Username already exists")
 
+# CHAT PAGE
 elif st.session_state.page == "chat":
-    username = st.session_state.username
-    st.markdown("""
-    <style>
-    .chat-box {
-        background-color: #0f0f0f;
-        color: #39ff14;
-        padding: 15px;
-        border-radius: 12px;
-        margin: 10px 0;
-        font-family: 'Courier New', monospace;
-        box-shadow: 0 0 10px #39ff14;
-    }
-    .chat-input {
-        background-color: #1f1f1f;
-        color: #fff;
-        border: 2px solid #39ff14;
-        border-radius: 10px;
-        padding: 10px;
-    }
-    .neon-title {
-        font-size: 30px;
-        text-align: center;
-        color: #fff;
-        text-shadow: 0 0 5px #39ff14, 0 0 10px #39ff14, 0 0 20px #39ff14;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    st.title(f"💬 Chat with Gemini - {st.session_state.username}")
 
-    st.markdown(f"<div class='neon-title'>💬 Gemini Chat with {username}</div>", unsafe_allow_html=True)
-
-    if st.button("🚪 Logout"):
+    if st.button("Logout"):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.session_state.page = "auth"
         st.rerun()
 
-    st.toggle("📜 Show last 10 chats", key="show_history")
+    if not st.session_state.conversation:
+        memory = ConversationBufferMemory(return_messages=True)
+        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GOOGLE_API_KEY)
+        st.session_state.conversation = ConversationChain(llm=llm, memory=memory)
 
     if not st.session_state.chat_history:
-        cursor.execute("SELECT user_input, bot_response FROM chats WHERE username = ? ORDER BY rowid DESC", (username,))
+        cursor.execute("SELECT user_input, bot_response FROM chats WHERE username = ? ORDER BY rowid DESC", (st.session_state.username,))
         st.session_state.chat_history = list(reversed(cursor.fetchall()))
 
-    paginated = st.session_state.chat_history[st.session_state.page_number * 10:(st.session_state.page_number + 1) * 10]
+    with st.container():
+        st.toggle("Show last 10 chats", key="show_history")
+        if st.session_state.show_history:
+            chats = st.session_state.chat_history[st.session_state.page_number * 10:(st.session_state.page_number + 1) * 10]
+            for u, b in chats:
+                st.markdown(f"**You:** {u}")
+                st.markdown(f"**Gemini:** {b}")
 
-    if st.session_state.show_history:
-        for user, bot in paginated:
-            st.markdown(f"<div class='chat-box'><b>You:</b> {user}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='chat-box'><b>Gemini:</b> {bot}</div>", unsafe_allow_html=True)
+            total_pages = (len(st.session_state.chat_history) - 1) // 10 + 1
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col1:
+                if st.session_state.page_number > 0:
+                    if st.button("Previous"):
+                        st.session_state.page_number -= 1
+                        st.rerun()
+            with col3:
+                if st.session_state.page_number < total_pages - 1:
+                    if st.button("Next"):
+                        st.session_state.page_number += 1
+                        st.rerun()
 
-        total_pages = (len(st.session_state.chat_history) - 1) // 10 + 1
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col1:
-            if st.session_state.page_number > 0:
-                if st.button("⬅️ Previous"):
-                    st.session_state.page_number -= 1
-                    st.rerun()
-        with col3:
-            if st.session_state.page_number < total_pages - 1:
-                if st.button("Next ➡️"):
-                    st.session_state.page_number += 1
-                    st.rerun()
+    with st.form("chat_form", clear_on_submit=True):
+        user_input = st.text_input("", placeholder="Ask something...")
+        submitted = st.form_submit_button("Send")
+        if submitted and user_input:
+            try:
+                response = st.session_state.conversation.predict(input=user_input)
+            except Exception as e:
+                response = f"Error: {e}"
 
-    if not st.session_state.conversation:
-        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GOOGLE_API_KEY)
-        memory = ConversationBufferMemory()
-        st.session_state.conversation = ConversationChain(llm=llm, memory=memory, verbose=False)
-
-    user_input = st.text_input("", placeholder="Type your message here...", label_visibility="collapsed", key="chat_input")
-    if user_input:
-        try:
-            response = chat_with_gemini(user_input)
-        except Exception as e:
-            response = f"Error: {e}"
-
-        st.session_state.chat_history.append((user_input, response))
-        cursor.execute("INSERT INTO chats (username, user_input, bot_response) VALUES (?, ?, ?)",
-                       (username, user_input, response))
-        conn.commit()
-
-        st.rerun()
+            st.session_state.chat_history.insert(0, (user_input, response))
+            cursor.execute("INSERT INTO chats (username, user_input, bot_response) VALUES (?, ?, ?)",
+                           (st.session_state.username, user_input, response))
+            conn.commit()
+            st.rerun()
