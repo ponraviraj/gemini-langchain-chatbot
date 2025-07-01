@@ -6,7 +6,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import ConversationChain
 from langchain.memory import ConversationBufferMemory
 
-# Load env
+# Load .env
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
@@ -32,9 +32,10 @@ cursor.execute('''
 ''')
 conn.commit()
 
-# Streamlit session setup
+# Streamlit Config
 st.set_page_config(page_title="Gemini Chat", page_icon="🤖")
 
+# Session Defaults
 if "page" not in st.session_state:
     st.session_state.page = "auth"
 if "username" not in st.session_state:
@@ -43,10 +44,8 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "conversation" not in st.session_state:
     st.session_state.conversation = None
-if "skip_rerun" not in st.session_state:
-    st.session_state.skip_rerun = False
 
-# ---------- AUTH PAGE ----------
+# Functions
 def login_user(name, password):
     cursor.execute("SELECT * FROM users WHERE username = ? AND password = ?", (name, password))
     return cursor.fetchone() is not None
@@ -59,9 +58,9 @@ def signup_user(name, password):
     except sqlite3.IntegrityError:
         return False
 
+# ---------- AUTH PAGE ----------
 if st.session_state.page == "auth":
     st.title("🔐 Welcome to Gemini Chat")
-
     tab1, tab2 = st.tabs(["🔓 Login", "🆕 Signup"])
 
     with tab1:
@@ -71,8 +70,7 @@ if st.session_state.page == "auth":
             if login_user(name, pw):
                 st.session_state.username = name
                 st.session_state.page = "chat"
-                st.session_state.skip_rerun = True
-                st.experimental_rerun()
+                st.experimental_set_query_params(auth="true")
             else:
                 st.error("❌ Invalid username or password")
 
@@ -97,48 +95,46 @@ elif st.session_state.page == "chat":
         st.session_state.username = ""
         st.session_state.chat_history = []
         st.session_state.conversation = None
-        st.session_state.skip_rerun = True
-        st.experimental_rerun()
+        st.experimental_set_query_params(auth="false")
 
-    # Load chat history once
     if not st.session_state.chat_history:
         cursor.execute("SELECT user_input, bot_response FROM chats WHERE username = ?", (username,))
         st.session_state.chat_history = [{"user": row[0], "bot": row[1]} for row in cursor.fetchall()]
 
-    # Initialize conversation
+    # Show history
+    for msg in st.session_state.chat_history[-3:]:
+        st.markdown(f"🧑‍💻 **You:** {msg['user']}")
+        st.markdown(f"🤖 **Gemini:** {msg['bot']}")
+
+    # Setup Gemini Chat model
     if st.session_state.conversation is None:
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",  # ✅ VALID Gemini model name
-            google_api_key=GOOGLE_API_KEY,
-        )
-        memory = ConversationBufferMemory()
-        st.session_state.conversation = ConversationChain(llm=llm, memory=memory)
+        try:
+            llm = ChatGoogleGenerativeAI(
+                model="gemini-1.5-flash",  # safer fallback model name
+                google_api_key=GOOGLE_API_KEY,
+            )
+            memory = ConversationBufferMemory()
+            st.session_state.conversation = ConversationChain(llm=llm, memory=memory)
+        except Exception as e:
+            st.error(f"❌ Failed to initialize Gemini model: {e}")
+            st.stop()
 
-    # Show last response
-    if st.session_state.chat_history:
-        last = st.session_state.chat_history[-1]
-        st.markdown(f"🧑‍💻 **You:** {last['user']}")
-        st.markdown(f"🤖 **Gemini:** {last['bot']}")
-
-    # Input box
     user_input = st.text_input("Ask Gemini something:")
     if user_input:
-        if "your name" in user_input.lower():
-            response = f"Your name is {username}."
-        else:
-            try:
+        try:
+            if "your name" in user_input.lower():
+                response = f"Your name is {username}."
+            else:
                 response = st.session_state.conversation.predict(input=user_input)
-            except Exception as e:
-                st.error("❌ Gemini model failed to respond.")
-                st.stop()
 
-        st.session_state.chat_history.append({"user": user_input, "bot": response})
-        cursor.execute("INSERT INTO chats (username, user_input, bot_response) VALUES (?, ?, ?)",
-                       (username, user_input, response))
-        conn.commit()
+            st.session_state.chat_history.append({"user": user_input, "bot": response})
+            cursor.execute("INSERT INTO chats (username, user_input, bot_response) VALUES (?, ?, ?)",
+                           (username, user_input, response))
+            conn.commit()
 
-        st.experimental_rerun()
+            st.experimental_set_query_params(auth="true")  # preserve state
+            st.experimental_rerun()
 
-# Avoid multiple rerun loops
-if st.session_state.get("skip_rerun"):
-    st.session_state.skip_rerun = False
+        except Exception as e:
+            st.error(f"❌ Gemini failed: {str(e)}")
+            st.stop()
