@@ -48,8 +48,8 @@ if "username" not in st.session_state:
     st.session_state.username = ""
 if "conversation" not in st.session_state:
     st.session_state.conversation = None
-if "login_trigger" not in st.session_state:
-    st.session_state.login_trigger = False
+if "history" not in st.session_state:
+    st.session_state.history = []
 
 # Auth functions
 def login_user(name, password):
@@ -73,7 +73,9 @@ if st.session_state.page == "auth":
         login_name = st.text_input("Name", key="login_name")
         login_pass = st.text_input("Password", type="password", key="login_pass")
 
-        if st.button("Login"):
+        login_clicked = st.button("Login")
+
+        if login_clicked:
             user = login_user(login_name, login_pass)
             if user:
                 st.session_state.username = login_name
@@ -102,6 +104,7 @@ elif st.session_state.page == "chat":
         st.session_state.page = "auth"
         st.session_state.username = ""
         st.session_state.conversation = None
+        st.session_state.history = []
         st.experimental_rerun()
 
     # Setup Gemini model
@@ -110,23 +113,31 @@ elif st.session_state.page == "chat":
             model="gemini-2.0-flash",
             google_api_key=GOOGLE_API_KEY
         )
-        memory = ConversationBufferMemory()
+        memory = ConversationBufferMemory(return_messages=True)
         st.session_state.conversation = ConversationChain(llm=llm, memory=memory)
 
-    # User input
-    user_input = st.text_input("Ask Gemini something:")
+        # Load old history
+        c.execute("SELECT user_msg, bot_msg FROM chat_history WHERE username=?", (username,))
+        rows = c.fetchall()
+        for user_msg, bot_msg in rows:
+            st.session_state.conversation.memory.chat_memory.add_user_message(user_msg)
+            st.session_state.conversation.memory.chat_memory.add_ai_message(bot_msg)
+            st.session_state.history.append((user_msg, bot_msg))
 
+    # Input
+    user_input = st.text_input("Ask Gemini something:")
     if user_input:
         if "your name" in user_input.lower():
             response = f"Your name is {username}."
         else:
             response = st.session_state.conversation.predict(input=user_input)
 
-        # Save to DB
+        # Store
         c.execute("INSERT INTO chat_history (username, user_msg, bot_msg) VALUES (?, ?, ?)",
                   (username, user_input, response))
         conn.commit()
 
-        # Display last message only
+        # Display last chat
+        st.session_state.history.append((user_input, response))
         st.markdown(f"🧑‍💻 **You:** {user_input}")
         st.markdown(f"🤖 **Gemini:** {response}")
