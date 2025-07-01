@@ -6,33 +6,31 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import ConversationChain
 from langchain.memory import ConversationBufferMemory
 
-# Load .env
+# Load environment variables
 load_dotenv()
 
-# Set keys
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY")
 LANGCHAIN_PROJECT = os.getenv("LANGCHAIN_PROJECT")
 
-# LangSmith setup (optional)
+# LangSmith (optional)
 os.environ["LANGCHAIN_API_KEY"] = LANGCHAIN_API_KEY or ""
 os.environ["LANGCHAIN_PROJECT"] = LANGCHAIN_PROJECT or ""
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
 
-# Create folder for user data
+# Setup data folder
 if not os.path.exists("data"):
     os.makedirs("data")
 
-# Page config
-st.set_page_config(page_title="Gemini Chatbot", page_icon="🤖")
+# Streamlit page setup
+st.set_page_config(page_title="Gemini Chat", page_icon="🤖")
 
-# Login screen
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
+# Login logic
+if "username" not in st.session_state:
+    st.session_state.username = None
 
-if not st.session_state.logged_in:
+if not st.session_state.username:
     st.title("🔐 Enter Unique Name to Start")
-
     username = st.text_input("Your Name (must be unique):")
 
     if st.button("Login"):
@@ -45,49 +43,42 @@ if not st.session_state.logged_in:
             else:
                 st.session_state.username = username
                 st.session_state.user_file = user_file
-                st.session_state.logged_in = True
                 st.session_state.chat_history = []
-                st.experimental_rerun()
+                st.success(f"✅ Welcome {username}!")
+                st.stop()  # Safely exit to reload session
+    st.stop()  # Stop if not logged in
 
-# Main chatbot UI
-else:
-    st.title(f"💬 Welcome, {st.session_state.username}!")
+# ✅ After login
+st.title(f"💬 Chat with Gemini - {st.session_state.username}")
 
-    # Load user chat history if exists
-    if os.path.exists(st.session_state.user_file):
-        with open(st.session_state.user_file, "r") as f:
-            st.session_state.chat_history = json.load(f)
+# Load chat history
+if os.path.exists(st.session_state.user_file):
+    with open(st.session_state.user_file, "r") as f:
+        st.session_state.chat_history = json.load(f)
 
-    # Show previous chats
-    for chat in st.session_state.chat_history:
-        st.markdown(f"🧑‍💻 **You:** {chat['user']}")
-        st.markdown(f"🤖 **Gemini:** {chat['bot']}")
+# Display past chats
+for item in st.session_state.chat_history:
+    st.markdown(f"🧑‍💻 **You:** {item['user']}")
+    st.markdown(f"🤖 **Gemini:** {item['bot']}")
 
-    # Setup LLM and memory
-    if "memory" not in st.session_state:
-        st.session_state.memory = ConversationBufferMemory()
+# LLM setup
+llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=GOOGLE_API_KEY)
+memory = ConversationBufferMemory()
+conversation = ConversationChain(llm=llm, memory=memory)
 
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
-        google_api_key=GOOGLE_API_KEY
-    )
+# Input box
+user_input = st.text_input("Ask Gemini something...")
 
-    conversation = ConversationChain(
-        llm=llm,
-        memory=st.session_state.memory,
-        verbose=False
-    )
-
-    # Ask input
-    user_input = st.text_input("Ask Gemini something...")
-
-    if user_input:
-        # Predict reply
+if user_input:
+    # Respond to name questions dynamically
+    if any(keyword in user_input.lower() for keyword in ["your my name", "who am i", "what is my name"]):
+        response = f"Your name is {st.session_state.username}."
+    else:
         response = conversation.predict(input=user_input)
 
-        # Save to history
-        st.session_state.chat_history.append({"user": user_input, "bot": response})
-        with open(st.session_state.user_file, "w") as f:
-            json.dump(st.session_state.chat_history, f, indent=2)
+    # Save chat history
+    st.session_state.chat_history.append({"user": user_input, "bot": response})
+    with open(st.session_state.user_file, "w") as f:
+        json.dump(st.session_state.chat_history, f, indent=2)
 
-        st.experimental_rerun()
+    st.markdown(f"🤖 **Gemini:** {response}")
