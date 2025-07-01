@@ -6,7 +6,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import ConversationChain
 from langchain.memory import ConversationBufferMemory
 
-# Load environment
+# Load env variables
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY")
@@ -16,25 +16,22 @@ os.environ["LANGCHAIN_API_KEY"] = LANGCHAIN_API_KEY or ""
 os.environ["LANGCHAIN_PROJECT"] = LANGCHAIN_PROJECT or ""
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
 
-# Set page
+# Streamlit config
 st.set_page_config(page_title="Gemini Chat", page_icon="🤖")
 
-# SQLite DB Setup
+# Database setup
 if not os.path.exists("data"):
     os.makedirs("data")
-
-conn = sqlite3.connect("data/gemini_users.db")
+conn = sqlite3.connect("data/gemini_users.db", check_same_thread=False)
 c = conn.cursor()
 
-# Create user table
+# Tables
 c.execute("""
     CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY,
         password TEXT
     )
 """)
-
-# Create chat table
 c.execute("""
     CREATE TABLE IF NOT EXISTS chat_history (
         username TEXT,
@@ -44,15 +41,17 @@ c.execute("""
 """)
 conn.commit()
 
-# Session states
+# Session state
 if "page" not in st.session_state:
     st.session_state.page = "auth"
 if "username" not in st.session_state:
     st.session_state.username = ""
 if "conversation" not in st.session_state:
     st.session_state.conversation = None
+if "login_trigger" not in st.session_state:
+    st.session_state.login_trigger = False
 
-# ------------------- AUTH -------------------
+# Auth functions
 def login_user(name, password):
     c.execute("SELECT * FROM users WHERE username=? AND password=?", (name, password))
     return c.fetchone()
@@ -65,6 +64,7 @@ def signup_user(name, password):
     except sqlite3.IntegrityError:
         return False
 
+# ----------------- UI Pages -------------------
 if st.session_state.page == "auth":
     st.title("🔐 Welcome to Gemini Chat")
     tabs = st.tabs(["🔓 Login", "🆕 Signup"])
@@ -73,7 +73,7 @@ if st.session_state.page == "auth":
         login_name = st.text_input("Name", key="login_name")
         login_pass = st.text_input("Password", type="password", key="login_pass")
 
-        if st.button("Login", key="login_button"):
+        if st.button("Login"):
             user = login_user(login_name, login_pass)
             if user:
                 st.session_state.username = login_name
@@ -86,15 +86,14 @@ if st.session_state.page == "auth":
         signup_name = st.text_input("Create Name", key="signup_name")
         signup_pass = st.text_input("Create Password", type="password", key="signup_pass")
 
-        if st.button("Signup", key="signup_button"):
+        if st.button("Signup"):
             if not signup_name or not signup_pass:
-                st.warning("❗ Both fields required.")
+                st.warning("❗ Both fields are required.")
             elif signup_user(signup_name, signup_pass):
-                st.success("✅ Signup successful. Please login.")
+                st.success("✅ Signup successful! Please login.")
             else:
                 st.warning("⚠️ Username already exists.")
 
-# ------------------- CHAT -------------------
 elif st.session_state.page == "chat":
     username = st.session_state.username
     st.title(f"💬 Chat with Gemini - {username}")
@@ -105,7 +104,7 @@ elif st.session_state.page == "chat":
         st.session_state.conversation = None
         st.experimental_rerun()
 
-    # Setup model
+    # Setup Gemini model
     if st.session_state.conversation is None:
         llm = ChatGoogleGenerativeAI(
             model="gemini-2.0-flash",
@@ -114,6 +113,7 @@ elif st.session_state.page == "chat":
         memory = ConversationBufferMemory()
         st.session_state.conversation = ConversationChain(llm=llm, memory=memory)
 
+    # User input
     user_input = st.text_input("Ask Gemini something:")
 
     if user_input:
@@ -122,11 +122,11 @@ elif st.session_state.page == "chat":
         else:
             response = st.session_state.conversation.predict(input=user_input)
 
-        # Store in SQLite
+        # Save to DB
         c.execute("INSERT INTO chat_history (username, user_msg, bot_msg) VALUES (?, ?, ?)",
                   (username, user_input, response))
         conn.commit()
 
-        # Show last message
+        # Display last message only
         st.markdown(f"🧑‍💻 **You:** {user_input}")
         st.markdown(f"🤖 **Gemini:** {response}")
