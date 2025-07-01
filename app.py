@@ -1,130 +1,130 @@
 import streamlit as st
 import os
+import json
 import sqlite3
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import ConversationChain
 from langchain.memory import ConversationBufferMemory
 
-# Load env variables
+# Load environment variables
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY")
-LANGCHAIN_PROJECT = os.getenv("LANGCHAIN_PROJECT")
 
-os.environ["LANGCHAIN_API_KEY"] = LANGCHAIN_API_KEY or ""
-os.environ["LANGCHAIN_PROJECT"] = LANGCHAIN_PROJECT or ""
-os.environ["LANGCHAIN_TRACING_V2"] = "true"
-
-# Streamlit config
-st.set_page_config(page_title="Gemini Chat", page_icon="🤖")
-
-# Database setup
+# DB Setup
 if not os.path.exists("data"):
     os.makedirs("data")
-conn = sqlite3.connect("data/gemini_users.db", check_same_thread=False)
-c = conn.cursor()
 
-# Tables
-c.execute("""
+conn = sqlite3.connect("data/gemini_users.db", check_same_thread=False)
+cursor = conn.cursor()
+
+# Create tables
+cursor.execute('''
     CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY,
-        password TEXT
+        password TEXT NOT NULL
     )
-""")
-c.execute("""
-    CREATE TABLE IF NOT EXISTS chat_history (
+''')
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS chats (
         username TEXT,
-        user_msg TEXT,
-        bot_msg TEXT
+        user_input TEXT,
+        bot_response TEXT
     )
-""")
+''')
 conn.commit()
 
-# Session state
+# Streamlit setup
+st.set_page_config(page_title="Gemini Chat", page_icon="🤖")
+
+# Initialize session
 if "page" not in st.session_state:
     st.session_state.page = "auth"
 if "username" not in st.session_state:
     st.session_state.username = ""
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 if "conversation" not in st.session_state:
     st.session_state.conversation = None
-if "history" not in st.session_state:
-    st.session_state.history = []
+if "just_logged_in" not in st.session_state:
+    st.session_state.just_logged_in = False
 
-# Auth functions
+# ---------- AUTH PAGE ----------
 def login_user(name, password):
-    c.execute("SELECT * FROM users WHERE username=? AND password=?", (name, password))
-    return c.fetchone()
+    cursor.execute("SELECT * FROM users WHERE username = ? AND password = ?", (name, password))
+    return cursor.fetchone() is not None
 
 def signup_user(name, password):
     try:
-        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (name, password))
+        cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (name, password))
         conn.commit()
         return True
     except sqlite3.IntegrityError:
         return False
 
-# ----------------- UI Pages -------------------
 if st.session_state.page == "auth":
     st.title("🔐 Welcome to Gemini Chat")
-    tabs = st.tabs(["🔓 Login", "🆕 Signup"])
 
-    with tabs[0]:
+    tab1, tab2 = st.tabs(["🔓 Login", "🆕 Signup"])
+
+    with tab1:
         login_name = st.text_input("Name", key="login_name")
         login_pass = st.text_input("Password", type="password", key="login_pass")
+        login_button = st.button("Login")
 
-        login_clicked = st.button("Login")
-
-        if login_clicked:
-            user = login_user(login_name, login_pass)
-            if user:
+        if login_button:
+            if login_user(login_name, login_pass):
                 st.session_state.username = login_name
                 st.session_state.page = "chat"
+                st.session_state.just_logged_in = True  # flag to skip rerun error
                 st.experimental_rerun()
             else:
-                st.error("❌ Invalid credentials")
+                st.error("❌ Invalid username or password")
 
-    with tabs[1]:
+    with tab2:
         signup_name = st.text_input("Create Name", key="signup_name")
         signup_pass = st.text_input("Create Password", type="password", key="signup_pass")
+        signup_button = st.button("Signup")
 
-        if st.button("Signup"):
+        if signup_button:
             if not signup_name or not signup_pass:
-                st.warning("❗ Both fields are required.")
+                st.warning("⚠️ Both fields are required")
             elif signup_user(signup_name, signup_pass):
                 st.success("✅ Signup successful! Please login.")
             else:
-                st.warning("⚠️ Username already exists.")
+                st.warning("⚠️ Username already exists")
 
+# ---------- CHAT PAGE ----------
 elif st.session_state.page == "chat":
     username = st.session_state.username
     st.title(f"💬 Chat with Gemini - {username}")
 
+    # Logout
     if st.button("🚪 Logout"):
         st.session_state.page = "auth"
         st.session_state.username = ""
+        st.session_state.chat_history = []
         st.session_state.conversation = None
-        st.session_state.history = []
+        st.session_state.just_logged_in = True  # avoid rerun error again
         st.experimental_rerun()
 
-    # Setup Gemini model
+    # Load past chats only once
+    if not st.session_state.chat_history:
+        cursor.execute("SELECT user_input, bot_response FROM chats WHERE username = ?", (username,))
+        st.session_state.chat_history = [{"user": row[0], "bot": row[1]} for row in cursor.fetchall()]
+
+    # Load model + memory
     if st.session_state.conversation is None:
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",
-            google_api_key=GOOGLE_API_KEY
-        )
-        memory = ConversationBufferMemory(return_messages=True)
+        llm = ChatGoogleGenerativeAI(model="gemini-2.0-pro", google_api_key=GOOGLE_API_KEY)
+        memory = ConversationBufferMemory()
         st.session_state.conversation = ConversationChain(llm=llm, memory=memory)
 
-        # Load old history
-        c.execute("SELECT user_msg, bot_msg FROM chat_history WHERE username=?", (username,))
-        rows = c.fetchall()
-        for user_msg, bot_msg in rows:
-            st.session_state.conversation.memory.chat_memory.add_user_message(user_msg)
-            st.session_state.conversation.memory.chat_memory.add_ai_message(bot_msg)
-            st.session_state.history.append((user_msg, bot_msg))
+    # Show last chat only
+    if st.session_state.chat_history:
+        last = st.session_state.chat_history[-1]
+        st.markdown(f"🧑‍💻 **You:** {last['user']}")
+        st.markdown(f"🤖 **Gemini:** {last['bot']}")
 
-    # Input
     user_input = st.text_input("Ask Gemini something:")
     if user_input:
         if "your name" in user_input.lower():
@@ -132,12 +132,13 @@ elif st.session_state.page == "chat":
         else:
             response = st.session_state.conversation.predict(input=user_input)
 
-        # Store
-        c.execute("INSERT INTO chat_history (username, user_msg, bot_msg) VALUES (?, ?, ?)",
-                  (username, user_input, response))
+        # Save and show chat
+        st.session_state.chat_history.append({"user": user_input, "bot": response})
+        cursor.execute("INSERT INTO chats (username, user_input, bot_response) VALUES (?, ?, ?)", (username, user_input, response))
         conn.commit()
 
-        # Display last chat
-        st.session_state.history.append((user_input, response))
-        st.markdown(f"🧑‍💻 **You:** {user_input}")
-        st.markdown(f"🤖 **Gemini:** {response}")
+        st.experimental_rerun()
+
+# Prevent rerun error on immediate rerun after login/logout
+if st.session_state.get("just_logged_in"):
+    st.session_state.just_logged_in = False
