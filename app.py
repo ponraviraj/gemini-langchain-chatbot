@@ -131,7 +131,7 @@ elif st.session_state.page == "chat":
             st.markdown(f"<div style='background-color:#fce4ec;padding:10px;border-radius:10px;margin-bottom:10px'><b>Gemini:</b> {row[1]}</div>", unsafe_allow_html=True)
 
     if not st.session_state.conversation:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.0-pro", google_api_key=GOOGLE_API_KEY)
+        llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=GOOGLE_API_KEY)
         memory = ConversationBufferMemory()
         st.session_state.conversation = ConversationChain(llm=llm, memory=memory)
 
