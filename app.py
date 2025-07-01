@@ -6,11 +6,11 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import ConversationChain
 from langchain.memory import ConversationBufferMemory
 
-# Load .env
+# Load environment variables
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-# DB Setup
+# Database setup
 if not os.path.exists("data"):
     os.makedirs("data")
 
@@ -32,10 +32,10 @@ cursor.execute('''
 ''')
 conn.commit()
 
-# Streamlit Config
+# Streamlit app config
 st.set_page_config(page_title="Gemini Chat", page_icon="🤖")
 
-# Session Defaults
+# Session state initialization
 if "page" not in st.session_state:
     st.session_state.page = "auth"
 if "username" not in st.session_state:
@@ -45,7 +45,7 @@ if "chat_history" not in st.session_state:
 if "conversation" not in st.session_state:
     st.session_state.conversation = None
 
-# Functions
+# Utility functions
 def login_user(name, password):
     cursor.execute("SELECT * FROM users WHERE username = ? AND password = ?", (name, password))
     return cursor.fetchone() is not None
@@ -70,7 +70,6 @@ if st.session_state.page == "auth":
             if login_user(name, pw):
                 st.session_state.username = name
                 st.session_state.page = "chat"
-                st.experimental_set_query_params(auth="true")
             else:
                 st.error("❌ Invalid username or password")
 
@@ -90,27 +89,19 @@ elif st.session_state.page == "chat":
     username = st.session_state.username
     st.title(f"💬 Chat with Gemini - {username}")
 
+    # Logout Button
     if st.button("🚪 Logout"):
         st.session_state.page = "auth"
         st.session_state.username = ""
         st.session_state.chat_history = []
         st.session_state.conversation = None
-        st.experimental_set_query_params(auth="false")
+        st.rerun()
 
-    if not st.session_state.chat_history:
-        cursor.execute("SELECT user_input, bot_response FROM chats WHERE username = ?", (username,))
-        st.session_state.chat_history = [{"user": row[0], "bot": row[1]} for row in cursor.fetchall()]
-
-    # Show history
-    for msg in st.session_state.chat_history[-3:]:
-        st.markdown(f"🧑‍💻 **You:** {msg['user']}")
-        st.markdown(f"🤖 **Gemini:** {msg['bot']}")
-
-    # Setup Gemini Chat model
+    # Load model if not already
     if st.session_state.conversation is None:
         try:
             llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",  # safer fallback model name
+                model="gemini-1.5-flash",  # Or gemini-pro based on availability
                 google_api_key=GOOGLE_API_KEY,
             )
             memory = ConversationBufferMemory()
@@ -119,6 +110,7 @@ elif st.session_state.page == "chat":
             st.error(f"❌ Failed to initialize Gemini model: {e}")
             st.stop()
 
+    # Input for asking Gemini
     user_input = st.text_input("Ask Gemini something:")
     if user_input:
         try:
@@ -127,14 +119,14 @@ elif st.session_state.page == "chat":
             else:
                 response = st.session_state.conversation.predict(input=user_input)
 
+            # Save in memory + DB
             st.session_state.chat_history.append({"user": user_input, "bot": response})
             cursor.execute("INSERT INTO chats (username, user_input, bot_response) VALUES (?, ?, ?)",
                            (username, user_input, response))
             conn.commit()
 
-            st.experimental_set_query_params(auth="true")  # preserve state
-            st.experimental_rerun()
+            # Display just the response
+            st.markdown(f"🤖 **Gemini:** {response}")
 
         except Exception as e:
-            st.error(f"❌ Gemini failed: {str(e)}")
-            st.stop()
+            st.error(f"❌ Gemini error: {e}")
